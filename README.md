@@ -233,7 +233,7 @@ make clean
 当前构建结果（供参考）：
 
 ```text
-FLASH: 50628 B / 512 KB
+FLASH: 50668 B / 512 KB
 RAM  :  3368 B / 128 KB
 0 warning
 ```

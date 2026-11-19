@@ -674,6 +674,10 @@ bool can_comm_position_pp(float target_rad)
     }
 
     (void)refresh_position(50u);
+    if (!reached && s_fb_valid &&
+        fabsf(s_fb_position - target_rad) <= APP_POS_TOLERANCE) {
+        reached = true;
+    }
 
     if (!s_fb_valid) {
         printf("[POS-PP] no feedback position; cannot confirm the move\r\n");
