@@ -4,9 +4,8 @@
   * @brief   upper_control - STM32G474RET6 CAN bus send/receive test.
   *
   * Scope: verify that the STM32G474 FDCAN1 peripheral can transmit and receive
-  * classic CAN frames at 1 Mbit/s, and provide get-ID / enable / disable
-  * commands.  No motion, position, velocity, current or parameter-write frame
-  * is sent.
+  * classic CAN frames at 1 Mbit/s, and provide get-ID / enable / disable and
+  * PP/CSP position moves.  No velocity, current or torque control frame is sent.
   *
   * Board / wiring:
   *   CAN1  : PA11 = FDCAN1_RX (AF9), PA12 = FDCAN1_TX (AF9)
@@ -26,6 +25,9 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Console UART handle, defined in main.c and used by syscalls.c / can_comm.c. */
+extern UART_HandleTypeDef hconsole;
 
 /* -------------------------------------------------------------------------- */
 /* Board / clock                                                              */
@@ -74,6 +76,18 @@ extern "C" {
 
 /* How long 'e' / 'd' wait for a type-2 feedback frame after the command. */
 #define APP_FEEDBACK_WAIT_MS 500u
+
+/* ---- position control (PP / CSP), units are radians ---------------------- */
+/* RS01 position range is +-4*pi rad (about +-12.57 rad). */
+#define APP_POS_MAX_RAD      12.566370614359172f
+#define APP_PP_VELOCITY      2.0f   /* rad/s, PP max speed        */
+#define APP_PP_ACCELERATION  5.0f   /* rad/s^2, PP acceleration   */
+#define APP_CSP_VELOCITY     2.0f   /* rad/s, CSP speed limit     */
+#define APP_POS_CURRENT      4.0f   /* A, safety current limit    */
+#define APP_POS_TOLERANCE    0.05f  /* rad, "target reached" band */
+#define APP_POS_TIMEOUT_MS   5000u  /* PP move timeout            */
+#define APP_CSP_RAMP_MS      2000u  /* CSP ramp duration          */
+#define APP_LINE_TIMEOUT_MS  15000u /* console line input timeout */
 
 void Error_Handler(void);
 

@@ -1,13 +1,12 @@
 /**
   ******************************************************************************
   * @file    rs01.h
-  * @brief   Minimal RS01 frame builders: extended-ID layout, get-ID and
-  *          enable/disable.  No motion/position/velocity/current commands.
+  * @brief   Minimal RS01 frame builders: extended-ID layout, get-ID,
+  *          enable/disable, parameter write, and PP/CSP position setup.
   *
-  * This file intentionally contains only the extended-ID layout and the frame
-  * builders needed for the CAN bring-up test plus enable/disable.  It does not
-  * implement motion, position, velocity, current, parameter read/write or any
-  * other RS01 control command.
+  * Scope is deliberately small: the frame builders needed for CAN bring-up,
+  * enable/disable and position mode (PP/CSP).  No velocity/current/torque
+  * control frame builder is provided.
   *
   * Extended CAN ID layout (29 bit, same as rs01_motor_control):
   *
@@ -48,6 +47,25 @@ extern "C" {
 /* Only 29 bits are valid in a CAN extended identifier. */
 #define RS01_CAN_ID_MASK 0x1FFFFFFFu
 
+/* ---- physical ranges (RS01 manual) ------------------------------------- */
+#define RS01_P_MAX (4.0f * 3.14159265358979323846f) /* +-4*pi rad */
+#define RS01_V_MAX 44.0f                            /* rad/s      */
+#define RS01_T_MAX 17.0f                            /* Nm         */
+
+/* ---- run_mode values ---------------------------------------------------- */
+#define RS01_MODE_PP  1u
+#define RS01_MODE_CSP 5u
+
+/* ---- parameter indexes used by the position sequences ------------------- */
+#define RS01_PARAM_RUN_MODE      0x7005u
+#define RS01_PARAM_LOC_REF       0x7016u
+#define RS01_PARAM_LIMIT_SPEED   0x7017u
+#define RS01_PARAM_LIMIT_CURRENT 0x7018u
+#define RS01_PARAM_MECH_POS      0x7019u
+#define RS01_PARAM_MECH_VEL      0x701Bu
+#define RS01_PARAM_PP_VEL_MAX    0x7024u
+#define RS01_PARAM_PP_ACCEL      0x7025u
+
 /* Decoded fields of an extended CAN ID. */
 typedef struct {
     uint32_t comm;     /* bits 28..24 */
@@ -86,6 +104,26 @@ void rs01_make_enable_frame(uint8_t target_id, uint16_t host_id,
 void rs01_make_disable_frame(uint8_t target_id, uint16_t host_id,
                              bool clear_error, uint32_t *can_id,
                              uint8_t payload[8]);
+
+/** @brief Build a uint8 parameter-write frame (communication type 0x12).
+  *        payload[0..1] = index (little endian), payload[4] = value. */
+void rs01_make_write_param_u8_frame(uint8_t target_id, uint16_t host_id,
+                                    uint16_t index, uint8_t value,
+                                    uint32_t *can_id, uint8_t payload[8]);
+
+/** @brief Build a float parameter-write frame (communication type 0x12).
+  *        payload[0..1] = index (little endian), payload[4..7] = IEEE-754 float
+  *        (little endian).  Used for loc_ref, speed/accel/current limits. */
+void rs01_make_write_param_float_frame(uint8_t target_id, uint16_t host_id,
+                                       uint16_t index, float value,
+                                       uint32_t *can_id, uint8_t payload[8]);
+
+/** @brief Build a parameter-read frame (communication type 0x11).
+  *        payload[0..1] = index (little endian); the reply carries the value
+  *        in payload[4..7] (float) or payload[4] (u8). */
+void rs01_make_read_param_frame(uint8_t target_id, uint16_t host_id,
+                                uint16_t index, uint32_t *can_id,
+                                uint8_t payload[8]);
 
 #ifdef __cplusplus
 }

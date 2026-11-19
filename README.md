@@ -1,7 +1,7 @@
 # upper_control — STM32G474RET6 CAN 收发验证固件
 
 本工程用于验证 STM32G474 的 CAN1（FDCAN1）收发，并提供 RS01 的
-**get-ID / 使能 / 失能** 三个最小命令；不发送位置、速度、运控、电流或参数写入帧。
+**get-ID / 使能 / 失能 / PP 位控 / CSP 位控** 命令；不实现速度、电流、力矩控制。
 
 - 板卡：STM32G474RET6
 - CAN：FDCAN1，经典 CAN（非 CAN-FD），**1 Mbit/s**，29 位扩展帧
@@ -11,10 +11,12 @@
 - 帧格式、波特率与 `rs01_motor_control` 保持一致
 
 > **范围说明**：已实现通信类型 `0x00`（get-ID）、`0x03`（使能）、`0x04`（失能，
-> 可带清错位）。**没有**实现运控、位置、速度、电流、设零点、参数读写等指令。
-> 上电**不会**自动使能电机；只有串口按 `e` 才会发送使能帧。
+> 可带清错位）、`0x12`（参数写入）以及 PP/CSP 位置控制流程。
+> **没有**实现速度、电流、力矩控制。
+> 上电**不会**自动使能或自动运动；只有按 `e`/`p`/`P` 才会发命令。
 >
-> 使能后电机可能保持/执行之前的运动目标，首次测试请空载或固定电机，电源加限流。
+> 位控会让电机真的转动。首次测试请空载或固定机构，电源加限流；程序默认
+> `limit_current = 4 A`、目标限幅 `±4π rad`，运动过程中按任意键可中止。
 
 ---
 
@@ -116,23 +118,97 @@ RS01 没有单独的硬件 enable 线；**使能就是一条 CAN 命令**（通�
 | `d` 失能 | `0x0400FF09` | `00 00 00 00 00 00 00 00` | 正常失能 |
 | `D` 失能+清错 | `0x0400FF09` | `01 00 00 00 00 00 00 00` | `Byte0=1` 清故障 |
 
-使能/失能后，电机应回答**通信类型 2 的反馈帧**。反馈帧的扩展 ID 中：
+使能/失能后，电机应回答**通信类型 2 的反馈帧**。反馈帧扩展 ID 的
+bit 23..8（即代码里的 `extra`）中：
 
 ```text
-bit 15..14 : 模式状态  0=Reset, 1=Cali, 2=Motor(运行)
-bit 13..8  : 6 bit 故障摘要
-bit 7..0   : 电机 ID（0x09）
+extra bit 15..14 : 模式状态  0=Reset, 1=Cali, 2=Motor(运行)
+extra bit 13..8  : 6 bit 故障摘要
+extra bit 7..0   : 电机 CAN ID（0x09）
+
+CAN ID bit 7..0  : 主机 CAN ID（0xFF）
 ```
+
+例如电机 ID 0x09、主机 0xFF、mode=2、fault=0 时，反馈 ID 为
+`0x028009FF`（不是 `0x02xxxx09`）。本固件识别的是 bit8..15 的电机 ID。
 
 本固件会把反馈打印成：
 
 ```text
-[RX] id=0x02xxxx09 ext dlc=8 comm=0x02(feedback) extra=0x8xxx motor=0x09 data=...
-       -> feedback: mode=2(motor) fault=0x00
+[RX] id=0x028009FF ext dlc=8 comm=0x02(feedback) extra=0x8009 id_lo=0xFF data=...
+       -> feedback: motor=0x09 host=0xFF  pos ...  mode=2(motor) fault=0x00
 ```
 
 > `e` 只发送使能帧，不发送任何位置/速度/运控目标。但电机如果还保留着上一次的
 > 运动目标，使能后仍可能动作；首次测试请空载或固定电机。
+
+### 3.5 位控帧（`p` / `P`）
+
+参考 `rs01_motor_control` 的 `position_pp_control()` 和
+`position_csp_control()`，本工程实现了两条最小位置控制流程。
+
+#### PP（点到点，run_mode = 1，命令 `p`）
+
+```text
+1. 失能                     comm=0x04, ID 0x0400FF09
+2. 写 run_mode = 1          comm=0x12, index 0x7005, u8 value 1
+3. 写 pp_vel_max             comm=0x12, index 0x7024, float (默认 2.0 rad/s)
+4. 写 pp_accel               comm=0x12, index 0x7025, float (默认 5.0 rad/s^2)
+5. 写 limit_current          comm=0x12, index 0x7018, float (安全限 4.0 A)
+6. 使能                     comm=0x03, ID 0x0300FF09
+7. 写 loc_ref = 目标位置      comm=0x12, index 0x7016, float
+```
+
+#### CSP（连续位置流，run_mode = 5，命令 `P`）
+
+```text
+1. 失能
+2. 写 run_mode = 5          index 0x7005
+3. 写 limit_speed           index 0x7017 (默认 2.0 rad/s)
+4. 写 limit_current         index 0x7018 (安全限 4.0 A)
+5. 使能
+6. 以 100 Hz 连续写 loc_ref，从当前反馈位置斜坡到目标，持续 2 s
+7. 最后再写一次目标并保持
+```
+
+> 如果电机不主动上报，固件会在 PP 运动过程中轮询 `mech_pos`（0x7019），
+> CSP 开始前也会先读一次 `mech_pos`，所以不要求先按 `e`。若 `mech_pos`
+> 读取也超时，会提示检查反馈/接线。
+
+#### 参数写入帧格式
+
+通信类型 `0x12`，ID = `0x1200FF09`：
+
+```text
+Byte0..1 : 参数索引，小端
+Byte2..3 : 0
+Byte4..7 : float 值，IEEE-754 小端；u8 参数只用 Byte4
+```
+
+例如 `loc_ref = 1.0 rad`：
+
+```text
+index 0x7016 -> 16 70
+float 1.0    -> 00 00 80 3F
+data         -> 16 70 00 00 00 00 80 3F
+```
+
+#### 反馈位置解析
+
+通信类型 2 / 24 的 8 字节 payload：
+
+```text
+Byte0..1 : 位置，大端 u16，映射到 ±4π rad
+Byte2..3 : 速度，大端 u16，映射到 ±44 rad/s
+Byte4..5 : 力矩，大端 u16，映射到 ±17 Nm
+Byte6..7 : 温度，大端 u16，×0.1 °C
+```
+
+`x` 命令会打印最近一次的 `pos / vel / trq / temp / mode / fault`。
+
+> 位置控制会真的让电机转动。程序默认目标限幅 `±4π rad`、限流 4 A；
+> PP 超时 5 s，CSP 斜坡 2 s；运动过程中按任意键可中止。中止后电机仍保持
+> 使能，按 `d` 失能。
 
 ---
 
@@ -157,8 +233,8 @@ make clean
 当前构建结果（供参考）：
 
 ```text
-FLASH: 24668 B / 512 KB
-RAM  :  2968 B / 128 KB
+FLASH: 50396 B / 512 KB
+RAM  :  3368 B / 128 KB
 0 warning
 ```
 
@@ -221,8 +297,8 @@ picocom -b 115200 /dev/ttyACM0
   'a' sends : id=0x0000FF09 (29-bit extended), DLC 8, payload 8 x 00
               comm=0x00(get-id) extra=0x00FF motor=0x09
 --------------------------------------------------
- Only get-ID / enable / disable are implemented.
- No motion/position/velocity/current frame is sent.
+ get-ID / enable / disable / PP / CSP are implemented.
+ No velocity/current/torque control frame is sent.
  Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.
 ==================================================
 ```
@@ -235,11 +311,16 @@ picocom -b 115200 /dev/ttyACM0
 | `e` | 发送 RS01 **使能**帧（`0x03`），等待 type-2 反馈 |
 | `d` | 发送 RS01 **失能**帧（`0x04`），等待 type-2 反馈 |
 | `D` | 失能并清错（`0x04`，payload[0]=1） |
+| `p <rad>` | **PP 位控**（run_mode=1），点到点移动到目标 |
+| `P <rad>` | **CSP 位控**（run_mode=5），100 Hz 位置流斜坡到目标 |
 | `r` | 软件复位 MCU（板上没有 reset 键时用这个） |
 | `h` | 帮助 |
-| `x` | CAN 状态、错误计数器、收发统计、最近反馈 mode/fault |
+| `x` | CAN 状态、反馈位置/速度/力矩/温度、错误计数 |
 | `l` | FDCAN 内部回环自测（只验证 MCU 侧，不经过总线） |
 | `n` | 停止并重新初始化 FDCAN1（清除 bus-off） |
+
+> `p` / `P` 区分大小写。可以输入 `p 1.57` 一次给值；只按 `p` 回车则固件会
+> 提示输入目标。目标单位是 **弧度**，范围 `±12.566 rad`（`±4π`）。
 
 ### 正常收发示例
 
@@ -274,8 +355,8 @@ e
 
 [TX] enable id=0x0300FF09 ext dlc=8 comm=0x03(enable) extra=0x00FF motor=0x09 data=00 00 00 00 00 00 00 00
 [TX] enable sent; waiting 500 ms for type-2 feedback...
-[RX] id=0x02xxxx09 ext dlc=8 comm=0x02(feedback) extra=0x8xxx motor=0x09 data=...
-       -> feedback: mode=2(motor) fault=0x00
+[RX] id=0x028009FF ext dlc=8 comm=0x02(feedback) extra=0x8009 id_lo=0xFF data=...
+       -> feedback: motor=0x09 host=0xFF  pos ...  mode=2(motor) fault=0x00
 [TX] enable: feedback received, mode=2(motor) fault=0x00
       -> motor reports run mode; enable accepted
 ```
@@ -291,6 +372,51 @@ e
 - 想停止：按 `d`；如果电机报故障，按 `D` 失能并清错。
 - 板上没有 reset 键时，按 `r` 软件复位，或执行 `make reset`。
 
+### 位控测试示例
+
+#### PP（点到点）
+
+先确认 get-ID/使能正常，然后输入：
+
+```text
+p 1.57
+
+[POS-PP] target=1.570 rad, vmax=2.00 rad/s, accel=5.00 rad/s^2, Ilim=4.0 A
+[TX] disable before mode id=0x0400FF09 ...
+[TX] write 0x7005 ... data=05 70 00 00 01 00 00 00
+[POS] run_mode -> 1(position-pp)
+[TX] write 0x7024 ... data=24 70 00 00 00 00 00 40
+[TX] write 0x7025 ... data=25 70 00 00 00 00 A0 40
+[TX] write 0x7018 ... data=18 70 00 00 00 00 80 40
+[TX] enable ...
+[TX] write 0x7016 ... data=16 70 00 00 C3 F5 C8 3F
+[POS-PP] moving... (any key aborts)
+[POS-PP] pos=  0.012 rad  target=  1.570 rad  vel=  1.980 rad/s
+[POS-PP] final pos=  1.568 rad (target   1.570), target reached
+[POS-PP] motor remains enabled at the target; press 'd' to disable
+```
+
+- `p` 只按一次也可以；固件会提示 `target position [rad] ...`。
+- 5 s 内未进入 `±0.05 rad` 会打印 `timeout / not reached`。
+
+#### CSP（连续位置流）
+
+CSP 会先读 `mech_pos`（0x7019）获取当前位置，再输入：
+
+```text
+P 0
+
+[POS-CSP] 1.568 -> 0.000 rad over 2000 ms, speed limit=2.00 rad/s, Ilim=4.0 A
+[POS-CSP] streaming loc_ref at 100 Hz... (any key aborts)
+[POS-CSP] cmd=  1.200 rad  pos=  1.190 rad  vel= -1.900 rad/s
+...
+[POS-CSP] final pos=  0.002 rad (target   0.000), tx_fail=0
+[POS-CSP] motor remains enabled; press 'd' to disable
+```
+
+> 位控会真的转动。首次测试空载/固定机构，电源限流；按任意键可中止，
+> 中止后按 `d` 失能。
+
 ---
 
 ## 6. 验证步骤建议
@@ -305,7 +431,9 @@ e
    - 按 `a`，应收到 `0x000009FE` 的 get-ID 应答；应答的 8 字节是电机 64 位 MCU UID。
    - 若电机处于主动上报状态，串口也会打印 `0x02` 反馈帧；这同样证明 RX 正常。
    - 确认 get-ID 正常后，再按 `e` 做使能测试；按 `d`/`D` 失能。
-4. 按 `x` 查看 `tx_err/rx_err/bus_off/lec`：
+   - 使能/反馈正常后，先小角度试 PP：`p 0.1`，再试 `p 0.5`、`p 1.0`；
+     CSP 用 `P 0`，确认能平滑回零。
+4. 按 `x` 查看 `tx_err/rx_err/bus_off/lec` 和反馈位置：
 
    | 状态 | 含义 | 优先检查 |
    | --- | --- | --- |
@@ -345,7 +473,12 @@ e
 | --- | --- |
 | 换电机 ID | `main.h` 的 `APP_MOTOR_ID` |
 | 换主机 ID | `main.h` 的 `APP_HOST_ID`（默认 0xFF，与库一致） |
-| 帧类型 | 固定提供 `0x00` get-ID、`0x03` 使能、`0x04` 失能；不提供运控/位置/速度/电流帧 |
+| 帧类型 | 提供 `0x00` get-ID、`0x03` 使能、`0x04` 失能、`0x12` 参数写、PP/CSP 位控；不提供速度/电流/力矩帧 |
+| 位控速度/加速度 | `main.h` 的 `APP_PP_VELOCITY`、`APP_PP_ACCELERATION`、`APP_CSP_VELOCITY` |
+| 位控安全限流 | `main.h` 的 `APP_POS_CURRENT`（默认 4 A） |
+| 位控目标范围 | `main.h` 的 `APP_POS_MAX_RAD`（默认 ±4π） |
+| PP 到位判断/超时 | `main.h` 的 `APP_POS_TOLERANCE`、`APP_POS_TIMEOUT_MS` |
+| CSP 斜坡时长 | `main.h` 的 `APP_CSP_RAMP_MS` |
 | 换串口引脚 | `main.h` 的 `APP_CONSOLE_*` + `main.c` 的 `HAL_UART_MspInit` |
 | 换 CAN 引脚 | `main.h` 的 `APP_CAN_*` + `fdcan.c` 的 `HAL_FDCAN_MspInit` |
 | 换波特率 | `fdcan.c` 的位时序 + `main.h` 注释；保持 75 MHz 内核时钟时按 `25 tq` 计算 |
@@ -354,7 +487,7 @@ e
 
 ## 9. 后续扩展
 
-本工程的 `rs01.c/h` 保留了扩展帧 ID 布局、get-ID 和 enable/disable 帧构造。
-后续如果要接 RS01 运控/位置/速度/电流协议，可在 `rs01.c/h` 中按
-`rs01_motor_control` 的帧定义继续加入；底层 `fdcan_send()` 已经可以直接发送
+本工程的 `rs01.c/h` 保留了扩展帧 ID 布局、get-ID、enable/disable、参数写入
+和 PP/CSP 位控帧构造。后续如果要接 RS01 速度/电流/力矩控制，可在 `rs01.c/h`
+中按 `rs01_motor_control` 的帧定义继续加入；底层 `fdcan_send()` 已经可以直接发送
 任意 29 位扩展帧，`can_comm.c` 的接收打印和反馈 mode/fault 解析也可以复用。

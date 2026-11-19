@@ -54,7 +54,8 @@ LDSCRIPT = STM32G474RETX_FLASH.ld
 LIBS = -lc -lm -lnosys
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBS) \
           -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections \
-          -Wl,--print-memory-usage -Wl,--no-warn-rwx-segments
+          -Wl,--print-memory-usage -Wl,--no-warn-rwx-segments \
+          -u _printf_float -u _scanf_float
 
 OPENOCD ?= openocd
 # DAP-Link (CMSIS-DAP) is the default probe on this board.

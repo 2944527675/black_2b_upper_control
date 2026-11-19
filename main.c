@@ -9,12 +9,12 @@
   *   - waits for console input on USART1 (PB6 TX / PB7 RX, 115200 8N1)
   *   - pressing 'a' sends a harmless get-device-ID frame with motor ID 0x09
   *   - 'e' sends the RS01 enable frame, 'd'/'D' send disable/clear-error
+  *   - 'p <rad>' runs a PP position move, 'P <rad>' runs a CSP position move
   *   - every received frame is printed with its decoded extended-ID fields;
-  *     type-2 feedback frames show mode and fault
+  *     feedback frames show position, velocity, torque, temperature, mode/fault
   *
   * What it deliberately does NOT do
-  *   - no motion, position, velocity, current or parameter-write frame is
-  *     ever sent; enable/disable only
+  *   - no velocity, current or torque control frame is sent
   *
   * Wiring
   *   CAN1 : PA11 = FDCAN1_RX, PA12 = FDCAN1_TX (AF9)
@@ -149,10 +149,79 @@ static void print_banner(void)
     printf("--------------------------------------------------\r\n");
     can_comm_print_test_frame_description();
     printf("--------------------------------------------------\r\n");
-    printf(" Only get-ID / enable / disable are implemented.\r\n");
-    printf(" No motion/position/velocity/current frame is sent.\r\n");
+    printf(" get-ID / enable / disable / PP / CSP are implemented.\r\n");
+    printf(" No velocity/current/torque control frame is sent.\r\n");
     printf(" Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.\r\n");
+    printf(" Press 'p <rad>' PP move, 'P <rad>' CSP move.\r\n");
     printf("==================================================\r\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Line input for the position commands                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Blocking line input with idle timeout; echoes and handles backspace.
+  * RX frames are drained quietly while waiting so the feedback position stays
+  * fresh even if the motor is streaming active reports. */
+static int read_line(char *buf, int max_len, uint32_t idle_ms)
+{
+    int n = 0;
+    uint32_t last = HAL_GetTick();
+
+    while ((HAL_GetTick() - last) < idle_ms) {
+        uint8_t ch;
+
+        can_comm_poll_quiet();
+
+        if (HAL_UART_Receive(&hconsole, &ch, 1u, 10u) != HAL_OK) {
+            continue;
+        }
+        last = HAL_GetTick();
+
+        if (ch == '\r' || ch == '\n') {
+            if (n == 0) {
+                printf("\r\n");
+                return -1; /* bare Enter cancels immediately */
+            }
+            break;
+        }
+        if (ch == 0x7Fu || ch == '\b') {
+            if (n > 0) {
+                n--;
+                printf("\b \b");
+            }
+            continue;
+        }
+        if (ch >= 0x20u && ch < 0x7Fu && n < (max_len - 1)) {
+            buf[n++] = (char)ch;
+            (void)HAL_UART_Transmit(&hconsole, &ch, 1u, 10u);
+        }
+    }
+
+    buf[n] = '\0';
+    printf("\r\n");
+    return (n > 0) ? n : -1;
+}
+
+/** Prompt for a target position in radians.  Returns false on empty/invalid. */
+static bool prompt_target_rad(float *target)
+{
+    char line[32];
+    float value = 0.0f;
+
+    printf("target position [rad] (-%.3f .. %.3f), Enter to cancel: ",
+           (double)APP_POS_MAX_RAD, (double)APP_POS_MAX_RAD);
+
+    if (read_line(line, (int)sizeof(line), APP_LINE_TIMEOUT_MS) < 0) {
+        printf("cancelled\r\n");
+        return false;
+    }
+    if (sscanf(line, "%f", &value) != 1) {
+        printf("invalid number: '%s'\r\n", line);
+        return false;
+    }
+    *target = value;
+    return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -204,6 +273,24 @@ int main(void)
         case 'D':
             (void)can_comm_send_disable(true);
             break;
+
+        case 'p': {
+            float target;
+
+            if (prompt_target_rad(&target)) {
+                (void)can_comm_position_pp(target);
+            }
+            break;
+        }
+
+        case 'P': {
+            float target;
+
+            if (prompt_target_rad(&target)) {
+                (void)can_comm_position_csp(target);
+            }
+            break;
+        }
 
         case 'r':
         case 'R':
