@@ -158,22 +158,29 @@ static void handle_frame(const fdcan_frame_t *frame, bool print)
     }
 
     if (id.comm == RS01_COMM_READ_PARAM && frame->dlc >= 8u) {
+        const uint8_t status = (uint8_t)((id.extra >> 8) & 0xFFu);
+
         s_param_index = (uint16_t)((uint16_t)frame->data[0] |
                                    ((uint16_t)frame->data[1] << 8));
-        s_param_float = get_f32_le(&frame->data[4]);
-        s_param_valid = true;
+        if (status == 0u) {
+            s_param_float = get_f32_le(&frame->data[4]);
+            s_param_valid = true;
 
-        if (s_param_index == RS01_PARAM_MECH_POS) {
-            s_fb_position = s_param_float;
-            s_fb_valid = true;
-            s_position_tick = frame->tick_ms;
-        } else if (s_param_index == RS01_PARAM_MECH_VEL) {
-            s_fb_velocity = s_param_float;
-        }
+            if (s_param_index == RS01_PARAM_MECH_POS) {
+                s_fb_position = s_param_float;
+                s_fb_valid = true;
+                s_position_tick = frame->tick_ms;
+            } else if (s_param_index == RS01_PARAM_MECH_VEL) {
+                s_fb_velocity = s_param_float;
+            }
 
-        if (print) {
-            printf("       -> param 0x%04X = %.4f\r\n",
-                   (unsigned)s_param_index, (double)s_param_float);
+            if (print) {
+                printf("       -> param 0x%04X = %.4f\r\n",
+                       (unsigned)s_param_index, (double)s_param_float);
+            }
+        } else if (print) {
+            printf("       -> param 0x%04X read FAILED (status=%u)\r\n",
+                   (unsigned)s_param_index, (unsigned)status);
         }
     }
 
@@ -624,6 +631,7 @@ bool can_comm_position_pp(float target_rad)
                                       RS01_PARAM_LOC_REF, target_rad,
                                       &can_id, payload);
     if (!send_simple_command(can_id, payload, "write loc_ref")) {
+        (void)can_comm_send_disable(false);
         return false;
     }
 
@@ -659,6 +667,12 @@ bool can_comm_position_pp(float target_rad)
     }
     s_rx_print = true;
     can_comm_poll();
+
+    if (aborted) {
+        printf("[POS-PP] abort key: sending DISABLE...\r\n");
+        (void)can_comm_send_disable(false);
+    }
+
     (void)refresh_position(50u);
 
     if (!s_fb_valid) {
@@ -669,7 +683,7 @@ bool can_comm_position_pp(float target_rad)
                reached ? "target reached" : "timeout / not reached");
     }
     if (aborted) {
-        printf("[POS-PP] aborted by key; motor remains enabled, press 'd' to disable\r\n");
+        printf("[POS-PP] aborted by key; DISABLE was sent\r\n");
     } else {
         printf("[POS-PP] motor remains enabled at the target; press 'd' to disable\r\n");
     }
@@ -736,9 +750,6 @@ bool can_comm_position_csp(float target_rad)
             tx_fail++;
         }
         can_comm_poll();
-        if ((HAL_GetTick() - s_position_tick) > 200u) {
-            (void)refresh_position(20u);
-        }
 
         if (key_pressed()) {
             aborted = true;
@@ -763,12 +774,23 @@ bool can_comm_position_csp(float target_rad)
     }
     s_rx_print = true;
     can_comm_poll();
+
+    if (aborted || (tx_fail > 0u)) {
+        printf("[POS-CSP] %s: sending DISABLE...\r\n",
+               aborted ? "abort key" : "TX failure");
+        (void)can_comm_send_disable(false);
+    }
+
     (void)refresh_position(50u);
 
     printf("[POS-CSP] final pos=%7.3f rad (target %7.3f), tx_fail=%lu%s\r\n",
            (double)s_fb_position, (double)target_rad, (unsigned long)tx_fail,
            aborted ? ", aborted by key" : "");
-    printf("[POS-CSP] motor remains enabled; press 'd' to disable\r\n");
+    if (aborted || (tx_fail > 0u)) {
+        printf("[POS-CSP] DISABLE was sent\r\n");
+    } else {
+        printf("[POS-CSP] motor remains enabled; press 'd' to disable\r\n");
+    }
     return !aborted && (tx_fail == 0u);
 }
 
