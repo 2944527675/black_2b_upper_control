@@ -901,6 +901,7 @@ void can_comm_print_help(void)
            "  1        PP move to 0 deg   (0 rad)\r\n"
            "  2        PP move to +90 deg (+1.5708 rad)\r\n"
            "  3        PP move to -90 deg (-1.5708 rad)\r\n"
+           "  m        DM4340 scan / MasterID setup (CAN1, no motion)\r\n"
            "  x        CAN status / feedback position / error counters\r\n"
            "  l        FDCAN internal loopback self test (MCU side only)\r\n"
            "  n        re-init FDCAN1 (clears bus-off)\r\n"
