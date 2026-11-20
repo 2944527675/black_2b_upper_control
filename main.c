@@ -203,21 +203,37 @@ static int read_line(char *buf, int max_len, uint32_t idle_ms)
     return (n > 0) ? n : -1;
 }
 
-/** Prompt for a target position in radians.  Returns false on empty/invalid. */
+/** Prompt for a target position in radians.  Returns false on empty/invalid.
+  * Accepts "0.5", "p 0.5" and "P 0.5": the p/P prefix is stripped so a second
+  * full command typed at the prompt does not fail. */
 static bool prompt_target_rad(float *target)
 {
     char line[32];
+    char *arg;
     float value = 0.0f;
 
-    printf("target position [rad] (-%.3f .. %.3f), Enter to cancel: ",
+    printf("target position [rad] (-%.3f .. %.3f), value only e.g. 0.5: ",
            (double)APP_POS_MAX_RAD, (double)APP_POS_MAX_RAD);
 
     if (read_line(line, (int)sizeof(line), APP_LINE_TIMEOUT_MS) < 0) {
         printf("cancelled\r\n");
         return false;
     }
-    if (sscanf(line, "%f", &value) != 1) {
-        printf("invalid number: '%s'\r\n", line);
+
+    arg = line;
+    while (*arg == ' ' || *arg == '\t') {
+        arg++;
+    }
+    if (*arg == 'p' || *arg == 'P') {
+        arg++;
+        while (*arg == ' ' || *arg == '\t') {
+            arg++;
+        }
+    }
+
+    if (sscanf(arg, "%f", &value) != 1) {
+        printf("invalid number: '%s' (enter only the value, e.g. 0.5)\r\n",
+               line);
         return false;
     }
     *target = value;
