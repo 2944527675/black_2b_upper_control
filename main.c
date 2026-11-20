@@ -28,7 +28,6 @@
 #include <stdio.h>
 
 #include "can_comm.h"
-#include "dm_config.h"
 #include "fdcan.h"
 #include "rs01.h"
 
@@ -155,7 +154,6 @@ static void print_banner(void)
     printf(" Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.\r\n");
     printf(" Press 'p <rad>' PP move, 'P <rad>' CSP move.\r\n");
     printf(" Presets: '1'=0 deg, '2'=+90 deg, '3'=-90 deg (PP).\r\n");
-    printf(" 'm' scans/configures DM4340 SlaveID/MasterID (no motion).\r\n");
     printf("==================================================\r\n");
 }
 
@@ -364,11 +362,6 @@ int main(void)
             }
             break;
         }
-
-        case 'm':
-        case 'M':
-            dm_config_menu();
-            break;
 
         case 'n':
         case 'N':

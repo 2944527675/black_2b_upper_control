@@ -1,7 +1,7 @@
 # upper_control — STM32G474RET6 CAN 收发验证固件
 
 本工程用于验证 STM32G474 的 CAN1（FDCAN1）收发，并提供 RS01 的
-**get-ID / 使能 / 失能 / PP 位控 / CSP 位控 / 预设角度 / DM4340 ID 配置**
+**get-ID / 使能 / 失能 / PP 位控 / CSP 位控 / 预设角度**
 命令；不实现速度、电流、力矩控制。
 
 - 板卡：STM32G474RET6
@@ -15,7 +15,6 @@
 > 可带清错位）、`0x12`（参数写入）以及 PP/CSP 位置控制流程。
 > **没有**实现速度、电流、力矩控制。
 > 上电**不会**自动使能或自动运动；只有按 `e`/`p`/`P`/`1`/`2`/`3` 才会发命令。
-> `m` 是达妙 DM4340 的只读扫描/MasterID 配置，不发送使能或运动。
 >
 > 位控会让电机真的转动。首次测试请空载或固定机构，电源加限流；程序默认
 > `limit_current = 4 A`、目标限幅 `±4π rad`，运动过程中按任意键可中止。
@@ -229,49 +228,6 @@ Byte6..7 : 温度，大端 u16，×0.1 °C
 - 如果机构行程不到 ±90°，不要按 `2`/`3`，或者先改小
   `APP_PRESET_POS90_DEG`/`APP_PRESET_NEG90_DEG`。
 
-### 3.7 达妙 DM4340 扫描 / MasterID 配置（`m`）
-
-DM4340 与 RS01 共用一个 CAN1，但使用 **11 位标准帧**，RS01 使用 29 位扩展帧；
-两者可以共存。
-
-达妙参数协议：
-
-```text
-标准 ID = 0x7FF
-读：data = {slave_lo, slave_hi, 0x33, RID, 0, 0, 0, 0}
-写：data = {slave_lo, slave_hi, 0x55, RID, value0..3}
-保存：data = {slave_lo, slave_hi, 0xAA, 0x01, 0, 0, 0, 0}
-```
-
-常用寄存器：
-
-```text
-7  = MST_ID（MasterID，反馈帧的 CAN ID）
-8  = ESC_ID（SlaveID，电机命令 ID）
-10 = CTRL_MODE
-21 = PMAX
-22 = VMAX
-23 = TMAX
-```
-
-按 `m` 后：
-
-1. 固件对 SlaveID `1..127` 逐个发送 **只读** 的 ESC_ID 请求；
-2. 找到后读取 MasterID、CTRL_MODE、PMAX/VMAX/TMAX；
-3. 打印当前 ID/限幅，询问新 MasterID，默认 `SlaveID + 0x10`；
-4. 输入 `yes` 确认后：
-   - 先发 DISABLE（不运动）；
-   - 写 `MST_ID`；
-   - 发送保存参数帧；
-   - 回读 `MST_ID` 验证。
-
-注意：
-
-- MasterID 范围用 `0x01..0x7F`，不能为 `0x00`、不能等于 SlaveID、不能占用 `0x7FF`；
-- 扫描阶段**不使能、不运动**；
-- 写 MasterID 后建议重新上电，再按 `m` 扫描一次确认；
-- 如果扫描不到：检查 DM 24V、CAN_H/CAN_L、共地、1 Mbit/s，以及电机是否处于达妙私有 CAN 协议。
-
 ---
 
 ## 4. 编译、烧录、串口
@@ -295,7 +251,7 @@ make clean
 当前构建结果（供参考）：
 
 ```text
-FLASH: 54280 B / 512 KB
+FLASH: 51164 B / 512 KB
 RAM  :  3368 B / 128 KB
 0 warning
 ```
@@ -364,7 +320,6 @@ picocom -b 115200 /dev/ttyACM0
  Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.
  Press 'p <rad>' PP move, 'P <rad>' CSP move.
  Presets: '1'=0 deg, '2'=+90 deg, '3'=-90 deg (PP).
- 'm' scans/configures DM4340 SlaveID/MasterID (no motion).
 ==================================================
 ```
 
@@ -381,7 +336,6 @@ picocom -b 115200 /dev/ttyACM0
 | `1` | PP 回到 **0°（0 rad）** |
 | `2` | PP 到 **+90°（+π/2 rad）** |
 | `3` | PP 到 **-90°（-π/2 rad）** |
-| `m` | 扫描 DM4340 SlaveID，读取/设置 MasterID（不发运动） |
 | `r` | 软件复位 MCU（板上没有 reset 键时用这个） |
 | `h` | 帮助 |
 | `x` | CAN 状态、反馈位置/速度/力矩/温度、错误计数 |
@@ -570,7 +524,6 @@ P 0
 | 位控安全限流 | `main.h` 的 `APP_POS_CURRENT`（默认 4 A） |
 | 位控目标范围 | `main.h` 的 `APP_POS_MAX_RAD`（默认 ±4π） |
 | 预设角度 | `main.h` 的 `APP_PRESET_ZERO_DEG`、`APP_PRESET_POS90_DEG`、`APP_PRESET_NEG90_DEG` |
-| DM4340 默认 MasterID | `dm_config.c` 里默认 `SlaveID + 0x10`，菜单可改 |
 | PP 到位判断/超时 | `main.h` 的 `APP_POS_TOLERANCE`、`APP_POS_TIMEOUT_MS` |
 | CSP 斜坡时长 | `main.h` 的 `APP_CSP_RAMP_MS` |
 | 换串口引脚 | `main.h` 的 `APP_CONSOLE_*` + `main.c` 的 `HAL_UART_MspInit` |
