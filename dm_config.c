@@ -70,6 +70,7 @@ static float get_f32_le(const uint8_t *p)
 static int read_line(char *buf, int max_len, uint32_t idle_ms)
 {
     int n = 0;
+    bool got_line = false;
     uint32_t last = HAL_GetTick();
 
     while ((HAL_GetTick() - last) < idle_ms) {
@@ -83,10 +84,7 @@ static int read_line(char *buf, int max_len, uint32_t idle_ms)
         last = HAL_GetTick();
 
         if (ch == '\r' || ch == '\n') {
-            if (n == 0) {
-                printf("\r\n");
-                return -1;
-            }
+            got_line = true;
             break;
         }
         if (ch == 0x7Fu || ch == '\b') {
@@ -103,7 +101,10 @@ static int read_line(char *buf, int max_len, uint32_t idle_ms)
     }
     buf[n] = '\0';
     printf("\r\n");
-    return (n > 0) ? n : -1;
+    if (!got_line) {
+        return -1; /* idle timeout */
+    }
+    return n;      /* 0 = bare Enter (accept default) */
 }
 
 /* Drain frames and wait for a parameter response for (slave, rid, cmd).
@@ -345,30 +346,32 @@ void dm_config_menu(void)
     printf("New MasterID [hex/dec, Enter=0x%02X, q=cancel]: ",
            (unsigned)default_master);
 
-    if (read_line(line, (int)sizeof(line), 15000u) < 0) {
-        printf("[DM] cancelled\r\n");
-        return;
-    }
-    if (line[0] == 'q' || line[0] == 'Q') {
-        printf("[DM] cancelled\r\n");
-        return;
-    }
+    {
+        const int n = read_line(line, (int)sizeof(line), 15000u);
 
-    if (line[0] == '\0') {
-        new_master = default_master;
-    } else {
-        char *end = NULL;
-        const unsigned long requested = strtoul(line, &end, 0);
-
-        if (end == line || requested == 0u || requested > 0x7Fu) {
-            printf("[DM] invalid MasterID; use 0x01..0x7F\r\n");
+        if (n < 0) {
+            printf("[DM] cancelled (timeout)\r\n");
             return;
         }
-        if ((uint8_t)requested == info.slave_id) {
-            printf("[DM] MasterID must differ from SlaveID\r\n");
+        if (n == 0) {
+            new_master = default_master;
+        } else if (line[0] == 'q' || line[0] == 'Q') {
+            printf("[DM] cancelled\r\n");
             return;
+        } else {
+            char *end = NULL;
+            const unsigned long requested = strtoul(line, &end, 0);
+
+            if (end == line || requested == 0u || requested > 0x7Fu) {
+                printf("[DM] invalid MasterID; use 0x01..0x7F\r\n");
+                return;
+            }
+            if ((uint8_t)requested == info.slave_id) {
+                printf("[DM] MasterID must differ from SlaveID\r\n");
+                return;
+            }
+            new_master = (uint8_t)requested;
         }
-        new_master = (uint8_t)requested;
     }
 
     printf("\r\nWrite MasterID 0x%02X to SlaveID 0x%02X and save to flash?\r\n"
