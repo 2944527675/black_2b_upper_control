@@ -153,6 +153,7 @@ static void print_banner(void)
     printf(" No velocity/current/torque control frame is sent.\r\n");
     printf(" Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.\r\n");
     printf(" Press 'p <rad>' PP move, 'P <rad>' CSP move.\r\n");
+    printf(" Presets: '1'=0 deg, '2'=+90 deg, '3'=-90 deg (PP).\r\n");
     printf("==================================================\r\n");
 }
 
@@ -240,6 +241,16 @@ static bool prompt_target_rad(float *target)
     return true;
 }
 
+/** Move to an absolute preset angle via PP.  The motor's zero is 0 rad. */
+static void move_preset_deg(float degrees)
+{
+    const float rad = APP_DEG_TO_RAD(degrees);
+
+    printf("\r\n[PRESET] %.1f deg -> %.4f rad (PP)\r\n",
+           (double)degrees, (double)rad);
+    (void)can_comm_position_pp(rad);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Main                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -288,6 +299,18 @@ int main(void)
 
         case 'D':
             (void)can_comm_send_disable(true);
+            break;
+
+        case '1':
+            move_preset_deg(APP_PRESET_ZERO_DEG);
+            break;
+
+        case '2':
+            move_preset_deg(APP_PRESET_POS90_DEG);
+            break;
+
+        case '3':
+            move_preset_deg(APP_PRESET_NEG90_DEG);
             break;
 
         case 'p': {

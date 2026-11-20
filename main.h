@@ -80,6 +80,13 @@ extern UART_HandleTypeDef hconsole;
 /* ---- position control (PP / CSP), units are radians ---------------------- */
 /* RS01 position range is +-4*pi rad (about +-12.57 rad). */
 #define APP_POS_MAX_RAD      12.566370614359172f
+#define APP_PI               3.14159265358979323846f
+#define APP_DEG_TO_RAD(d)    ((d) * (APP_PI / 180.0f))
+
+/* Preset buttons 1/2/3: absolute motor positions in degrees. */
+#define APP_PRESET_ZERO_DEG   0.0f
+#define APP_PRESET_POS90_DEG  90.0f
+#define APP_PRESET_NEG90_DEG  (-90.0f)
 #define APP_PP_VELOCITY      2.0f   /* rad/s, PP max speed        */
 #define APP_PP_ACCELERATION  5.0f   /* rad/s^2, PP acceleration   */
 #define APP_CSP_VELOCITY     2.0f   /* rad/s, CSP speed limit     */

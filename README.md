@@ -1,7 +1,8 @@
 # upper_control — STM32G474RET6 CAN 收发验证固件
 
 本工程用于验证 STM32G474 的 CAN1（FDCAN1）收发，并提供 RS01 的
-**get-ID / 使能 / 失能 / PP 位控 / CSP 位控** 命令；不实现速度、电流、力矩控制。
+**get-ID / 使能 / 失能 / PP 位控 / CSP 位控 / 预设角度** 命令；
+不实现速度、电流、力矩控制。
 
 - 板卡：STM32G474RET6
 - CAN：FDCAN1，经典 CAN（非 CAN-FD），**1 Mbit/s**，29 位扩展帧
@@ -13,7 +14,7 @@
 > **范围说明**：已实现通信类型 `0x00`（get-ID）、`0x03`（使能）、`0x04`（失能，
 > 可带清错位）、`0x12`（参数写入）以及 PP/CSP 位置控制流程。
 > **没有**实现速度、电流、力矩控制。
-> 上电**不会**自动使能或自动运动；只有按 `e`/`p`/`P` 才会发命令。
+> 上电**不会**自动使能或自动运动；只有按 `e`/`p`/`P`/`1`/`2`/`3` 才会发命令。
 >
 > 位控会让电机真的转动。首次测试请空载或固定机构，电源加限流；程序默认
 > `limit_current = 4 A`、目标限幅 `±4π rad`，运动过程中按任意键可中止。
@@ -210,6 +211,23 @@ Byte6..7 : 温度，大端 u16，×0.1 °C
 > PP 超时 5 s，CSP 斜坡 2 s；运动过程中按任意键可中止，固件会立即发送
 > DISABLE 帧。正常到位后电机保持使能，按 `d` 可主动失能。
 
+### 3.6 预设角度按键（`1` / `2` / `3`）
+
+| 键 | 目标角度 | 目标弧度 | 模式 |
+| --- | --- | --- | --- |
+| `1` | 0° | `0.0000 rad` | PP |
+| `2` | +90° | `+1.5708 rad` | PP |
+| `3` | -90° | `-1.5708 rad` | PP |
+
+说明：
+
+- 三个预设都是**绝对位置**，不是相对当前角度加减。
+- `1` 的“0 点”是电机自己的 **0 rad** 位置，不会重新设置机械零点。
+- 每次按键都会走完整的 PP 流程：失能 → `run_mode=1` → 速度/加速度/限流 →
+  使能 → 写 `loc_ref`，因此第一次动作前会有约 1 s 的配置时间。
+- 如果机构行程不到 ±90°，不要按 `2`/`3`，或者先改小
+  `APP_PRESET_POS90_DEG`/`APP_PRESET_NEG90_DEG`。
+
 ---
 
 ## 4. 编译、烧录、串口
@@ -233,7 +251,7 @@ make clean
 当前构建结果（供参考）：
 
 ```text
-FLASH: 50740 B / 512 KB
+FLASH: 51164 B / 512 KB
 RAM  :  3368 B / 128 KB
 0 warning
 ```
@@ -300,6 +318,8 @@ picocom -b 115200 /dev/ttyACM0
  get-ID / enable / disable / PP / CSP are implemented.
  No velocity/current/torque control frame is sent.
  Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.
+ Press 'p <rad>' PP move, 'P <rad>' CSP move.
+ Presets: '1'=0 deg, '2'=+90 deg, '3'=-90 deg (PP).
 ==================================================
 ```
 
@@ -313,6 +333,9 @@ picocom -b 115200 /dev/ttyACM0
 | `D` | 失能并清错（`0x04`，payload[0]=1） |
 | `p <rad>` | **PP 位控**（run_mode=1），点到点移动到目标 |
 | `P <rad>` | **CSP 位控**（run_mode=5），100 Hz 位置流斜坡到目标 |
+| `1` | PP 回到 **0°（0 rad）** |
+| `2` | PP 到 **+90°（+π/2 rad）** |
+| `3` | PP 到 **-90°（-π/2 rad）** |
 | `r` | 软件复位 MCU（板上没有 reset 键时用这个） |
 | `h` | 帮助 |
 | `x` | CAN 状态、反馈位置/速度/力矩/温度、错误计数 |
@@ -322,6 +345,9 @@ picocom -b 115200 /dev/ttyACM0
 > `p` / `P` 区分大小写。可以输入 `p 1.57` 一次给值；只按 `p` 回车则固件会
 > 提示输入目标。提示里输入 `0.5` 或再次输入 `p 0.5` 都可以。
 > 目标单位是 **弧度**，范围 `±12.566 rad`（`±4π`）。
+>
+> `1` / `2` / `3` 只在主界面有效；进入 `target position` 提示后，输入的数字
+> 会当成目标值，不会触发预设。`1` 的 0 点是电机绝对 **0 rad**，不会重新设零点。
 
 ### 正常收发示例
 
@@ -415,6 +441,25 @@ P 0
 [POS-CSP] motor remains enabled; press 'd' to disable
 ```
 
+#### 预设角度按键
+
+```text
+1
+[PRESET] 0.0 deg -> 0.0000 rad (PP)
+[POS-PP] target=0.000 rad, ...
+[POS-PP] final pos=... target reached
+
+2
+[PRESET] 90.0 deg -> 1.5708 rad (PP)
+[POS-PP] target=1.571 rad, ...
+[POS-PP] final pos=... target reached
+
+3
+[PRESET] -90.0 deg -> -1.5708 rad (PP)
+[POS-PP] target=-1.571 rad, ...
+[POS-PP] final pos=... target reached
+```
+
 > 位控会真的转动。首次测试空载/固定机构，电源限流；按任意键可中止，
 > 中止时固件会发送 DISABLE 帧。
 
@@ -478,6 +523,7 @@ P 0
 | 位控速度/加速度 | `main.h` 的 `APP_PP_VELOCITY`、`APP_PP_ACCELERATION`、`APP_CSP_VELOCITY` |
 | 位控安全限流 | `main.h` 的 `APP_POS_CURRENT`（默认 4 A） |
 | 位控目标范围 | `main.h` 的 `APP_POS_MAX_RAD`（默认 ±4π） |
+| 预设角度 | `main.h` 的 `APP_PRESET_ZERO_DEG`、`APP_PRESET_POS90_DEG`、`APP_PRESET_NEG90_DEG` |
 | PP 到位判断/超时 | `main.h` 的 `APP_POS_TOLERANCE`、`APP_POS_TIMEOUT_MS` |
 | CSP 斜坡时长 | `main.h` 的 `APP_CSP_RAMP_MS` |
 | 换串口引脚 | `main.h` 的 `APP_CONSOLE_*` + `main.c` 的 `HAL_UART_MspInit` |
