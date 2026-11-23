@@ -26,12 +26,27 @@
 #include "main.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "can_comm.h"
+#include "dm_position.h"
 #include "fdcan.h"
 #include "rs01.h"
 
 UART_HandleTypeDef hconsole;
+
+/* ---- DM4340 (standard 11-bit IDs, same bus as the RS01) ------------------ */
+#define DM_CAN_ID 0x01u
+#define DM_MST_ID 0x21u
+#define DM_PMAX   12.5f
+#define DM_VMAX   30.0f
+#define DM_TMAX   10.0f
+#define DM_KP     2.0f
+#define DM_KD     0.2f
+
+static dm_pos_feedback_t s_dm_fb;
+static bool s_dm_fb_valid;
 
 /* -------------------------------------------------------------------------- */
 /* Clock: HSI16 -> PLL -> 150 MHz SYSCLK, PLLQ 75 MHz for FDCAN               */
@@ -154,6 +169,8 @@ static void print_banner(void)
     printf(" Press 'a' get-ID, 'e' enable, 'd' disable, 'h' help.\r\n");
     printf(" Press 'p <rad>' PP move, 'P <rad>' CSP move.\r\n");
     printf(" Presets: '1'=0 deg, '2'=+90 deg, '3'=-90 deg (PP).\r\n");
+    printf(" Press 'z' set mechanical zero (disabled, asks 'yes').\r\n");
+    printf(" Press 'm' for DM4340 position control (MIT + kp).\r\n");
     printf("==================================================\r\n");
 }
 
@@ -252,6 +269,183 @@ static void move_preset_deg(float degrees)
 }
 
 /* -------------------------------------------------------------------------- */
+/* DM4340 position menu                                                       */
+/* -------------------------------------------------------------------------- */
+
+static const char *dm_state_name(uint8_t state)
+{
+    switch (state) {
+    case 0u: return "DISABLED";
+    case 1u: return "ENABLED";
+    case 8u: return "OVERVOLTAGE";
+    case 9u: return "UNDERVOLTAGE";
+    case 0xAu: return "OVERCURRENT";
+    case 0xBu: return "MOS_OVERTEMP";
+    case 0xCu: return "COIL_OVERTEMP";
+    case 0xDu: return "COMM_LOSS";
+    case 0xEu: return "OVERLOAD";
+    default: return "UNKNOWN";
+    }
+}
+
+static void dm_print_fb(const dm_pos_feedback_t *fb)
+{
+    printf("[DM-FB] state=0x%X %-12s pos=%.3f rad (%.2f deg) "
+           "vel=%.2f rad/s tor=%.2f Nm Tmos=%u Tcoil=%u\r\n",
+           (unsigned)fb->state, dm_state_name(fb->state),
+           (double)fb->pos, (double)(fb->pos * 57.29577951308232f),
+           (double)fb->vel, (double)fb->torque,
+           (unsigned)fb->t_mos, (unsigned)fb->t_coil);
+}
+
+static void dm_print_help(void)
+{
+    printf("  e            enable + hold present position\r\n"
+           "  a <deg>      target angle in degrees, e.g. a 30\r\n"
+           "  s            status + latest feedback\r\n"
+           "  d            disable (motor free)\r\n"
+           "  q            disable and return to RS01 menu\r\n"
+           "  ?            this help\r\n");
+}
+
+static void dm_rx_hook(const fdcan_frame_t *frame)
+{
+    if (dm_pos_on_frame(frame, &s_dm_fb)) {
+        s_dm_fb_valid = true;
+    }
+}
+
+/** DM4340 submenu.  Entered with 'm' from the RS01 menu; the DM motor is
+  *  always disabled on entry and on exit. */
+static void dm_menu(void)
+{
+    uint32_t last_print = 0u;
+    char line[32];
+
+    s_dm_fb_valid = false;
+    dm_pos_disable(); /* in case a previous visit left it enabled */
+
+    printf("\r\n=== DM4340 position control (MIT, kp + angle) ===\r\n");
+    printf("  motor CAN_ID=0x%02X  MST_ID=0x%02X  1 Mbit/s\r\n",
+           DM_CAN_ID, DM_MST_ID);
+    printf("  motor is DISABLED; 'e' enables and holds present position.\r\n");
+    dm_print_help();
+
+    for (;;) {
+        uint8_t ch;
+
+        can_comm_poll_quiet();
+        dm_pos_service();
+
+        if (HAL_UART_Receive(&hconsole, &ch, 1u, 5u) == HAL_OK) {
+            if (ch == '\r' || ch == '\n') {
+                continue;
+            }
+            printf("\r\n");
+            switch (ch) {
+            case 'e':
+            case 'E': {
+                const uint32_t t0 = HAL_GetTick();
+
+                (void)dm_pos_enable();
+                while (!dm_pos_has_feedback() &&
+                       (HAL_GetTick() - t0) < 300u) {
+                    can_comm_poll_quiet();
+                    HAL_Delay(5u);
+                }
+                if (dm_pos_has_feedback()) {
+                    printf("[DM] enabled, holding present position\r\n");
+                } else {
+                    printf("[DM] enabled, but no feedback on 0x%02X yet;\r\n"
+                           "     check +24 V, CAN wiring and MasterID.\r\n",
+                           DM_MST_ID);
+                }
+                break;
+            }
+
+            case 'a':
+            case 'A': {
+                char *end = NULL;
+                float deg;
+
+                printf("target angle [deg] (-%.1f .. %.1f): ",
+                       (double)(DM_PMAX * 57.29577951308232f),
+                       (double)(DM_PMAX * 57.29577951308232f));
+                if (read_line(line, (int)sizeof(line),
+                              APP_LINE_TIMEOUT_MS) < 0 ||
+                    line[0] == '\0') {
+                    printf("[DM] cancelled\r\n");
+                    break;
+                }
+                deg = strtof(line, &end);
+                if (end == line) {
+                    printf("[DM] invalid angle\r\n");
+                } else if (!dm_pos_set_angle_deg(deg)) {
+                    printf("[DM] not enabled, or no feedback yet\r\n");
+                } else {
+                    printf("[DM] target = %.2f deg (%.3f rad)\r\n",
+                           (double)dm_pos_target_deg(),
+                           (double)(dm_pos_target_deg() *
+                                    0.017453292519943295f));
+                }
+                break;
+            }
+
+            case 's':
+            case 'S':
+                printf("[DM] enabled=%u feedback=%u target=%.2f deg\r\n",
+                       (unsigned)dm_pos_is_enabled(),
+                       (unsigned)dm_pos_has_feedback(),
+                       (double)dm_pos_target_deg());
+                if (s_dm_fb_valid) {
+                    dm_print_fb(&s_dm_fb);
+                } else {
+                    printf("[DM] no feedback yet\r\n");
+                }
+                break;
+
+            case 'd':
+            case 'D':
+                dm_pos_disable();
+                printf("[DM] disabled; motor free\r\n");
+                break;
+
+            case 'q':
+            case 'Q':
+            case 'b':
+            case 'B':
+                dm_pos_disable();
+                printf("[DM] back to RS01 menu\r\n");
+                return;
+
+            case 'h':
+            case 'H':
+            case '?':
+                dm_print_help();
+                break;
+
+            default:
+                if (ch >= 0x20u && ch < 0x7Fu) {
+                    printf("unknown DM command '%c'\r\n", (int)ch);
+                }
+                break;
+            }
+        }
+
+        if (dm_pos_is_enabled() &&
+            (HAL_GetTick() - last_print) >= 500u) {
+            last_print = HAL_GetTick();
+            if (s_dm_fb_valid) {
+                dm_print_fb(&s_dm_fb);
+            } else {
+                printf("[DM] waiting for feedback on MST_ID 0x%02X...\r\n",
+                       DM_MST_ID);
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Main                                                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -266,7 +460,25 @@ int main(void)
     if (!can_comm_init()) {
         printf("[CAN] FDCAN1 init FAILED. Check clock config; press 'n' to retry.\r\n");
     }
+
+    {
+        static const dm_pos_config_t dm_cfg = {
+            .can_id = DM_CAN_ID,
+            .master_id = DM_MST_ID,
+            .mode = DM_MODE_MIT,
+            .pmax = DM_PMAX,
+            .vmax = DM_VMAX,
+            .tmax = DM_TMAX,
+            .kp = DM_KP,
+            .kd = DM_KD,
+        };
+
+        dm_pos_init(&dm_cfg);
+        can_comm_set_rx_hook(dm_rx_hook);
+    }
+
     can_comm_print_help();
+    printf(" 'm' = DM4340 position control (MIT + kp, angle in deg)\r\n");
 
     for (;;) {
         uint8_t ch;
@@ -300,6 +512,27 @@ int main(void)
         case 'D':
             (void)can_comm_send_disable(true);
             break;
+
+        case 'z':
+        case 'Z': {
+            char line[16];
+
+            printf("[ZERO] Disable the RS01, then set the present output-shaft\r\n"
+                   "       position as 0 rad.  This changes the coordinate\r\n"
+                   "       reference: all later position targets shift.\r\n"
+                   "       Type 'yes' to confirm: ");
+            if (read_line(line, (int)sizeof(line),
+                          APP_LINE_TIMEOUT_MS) < 0 ||
+                strcmp(line, "yes") != 0) {
+                printf("[ZERO] cancelled\r\n");
+                break;
+            }
+            if (can_comm_set_zero()) {
+                printf("[ZERO] done; motor is disabled and position is 0 rad.\r\n"
+                       "       Press '1' or 'p 0' to verify, then 'e' to enable.\r\n");
+            }
+            break;
+        }
 
         case '1':
             move_preset_deg(APP_PRESET_ZERO_DEG);
@@ -341,11 +574,18 @@ int main(void)
         case 'h':
         case 'H':
             can_comm_print_help();
+            printf(" 'm' = DM4340 position control (MIT + kp, angle in deg)\r\n");
             break;
 
         case 'x':
         case 'X':
             can_comm_print_status();
+            break;
+
+        case 'm':
+        case 'M':
+            dm_menu();
+            printf("\r\n[RS01] back to main menu ('h' for help)\r\n");
             break;
 
         case 'l':

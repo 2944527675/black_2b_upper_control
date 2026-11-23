@@ -84,6 +84,14 @@ void rs01_make_disable_frame(uint8_t target_id, uint16_t host_id,
     *can_id = rs01_make_can_id(RS01_COMM_DISABLE, host_id, target_id);
 }
 
+void rs01_make_set_zero_frame(uint8_t target_id, uint16_t host_id,
+                              uint32_t *can_id, uint8_t payload[8])
+{
+    memset(payload, 0, 8u);
+    payload[0] = 1u; /* communication type 6: data[0] must be 1 */
+    *can_id = rs01_make_can_id(RS01_COMM_SET_ZERO, host_id, target_id);
+}
+
 void rs01_make_write_param_u8_frame(uint8_t target_id, uint16_t host_id,
                                     uint16_t index, uint8_t value,
                                     uint32_t *can_id, uint8_t payload[8])

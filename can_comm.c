@@ -49,6 +49,7 @@ static float s_param_float;
 static bool s_rx_print = true;
 static uint32_t s_enable_sent;
 static uint32_t s_disable_sent;
+static can_comm_rx_hook_t s_rx_hook;
 
 static const char *mode_name(uint8_t mode)
 {
@@ -277,8 +278,16 @@ void can_comm_poll(void)
 
     while (fdcan_receive(&frame)) {
         s_rx_seen++;
+        if (s_rx_hook != NULL) {
+            s_rx_hook(&frame);
+        }
         handle_frame(&frame, s_rx_print);
     }
+}
+
+void can_comm_set_rx_hook(can_comm_rx_hook_t hook)
+{
+    s_rx_hook = hook;
 }
 
 void can_comm_poll_quiet(void)
@@ -535,6 +544,41 @@ bool can_comm_send_disable(bool clear_error)
     printf("[TX] disable: feedback received, mode=%u(%s) fault=0x%02X\r\n",
            (unsigned)s_feedback_mode, mode_name(s_feedback_mode),
            (unsigned)s_feedback_fault);
+    return true;
+}
+
+bool can_comm_set_zero(void)
+{
+    uint32_t can_id;
+    uint8_t payload[8];
+    uint32_t before;
+
+    /* Disable first: capture the zero with the drive idle. */
+    before = s_feedback_frames;
+    rs01_make_disable_frame(APP_MOTOR_ID, APP_HOST_ID, false, &can_id, payload);
+    if (!send_simple_command(can_id, payload, "disable before set-zero")) {
+        return false;
+    }
+    (void)wait_new_feedback(before, 100u);
+
+    before = s_feedback_frames;
+    rs01_make_set_zero_frame(APP_MOTOR_ID, APP_HOST_ID, &can_id, payload);
+    if (!send_simple_command(can_id, payload, "set-zero")) {
+        return false;
+    }
+
+    printf("[TX] set-zero sent; waiting %lu ms for type-2 feedback...\r\n",
+           (unsigned long)APP_FEEDBACK_WAIT_MS);
+    (void)wait_new_feedback(before, APP_FEEDBACK_WAIT_MS);
+
+    if (s_feedback_frames == before) {
+        printf("[TX] set-zero: no feedback (command already sent)\r\n");
+        return false;
+    }
+
+    printf("[TX] set-zero: feedback received, pos=%.4f rad, mode=%u(%s)\r\n",
+           (double)s_fb_position, (unsigned)s_feedback_mode,
+           mode_name(s_feedback_mode));
     return true;
 }
 
@@ -896,6 +940,7 @@ void can_comm_print_help(void)
            "  e        RS01 ENABLE frame\r\n"
            "  d        RS01 DISABLE frame\r\n"
            "  D        DISABLE + clear-error bit\r\n"
+           "  z        set present position as mechanical zero (asks 'yes')\r\n"
            "  p <rad>  PP position move (run_mode=1, point-to-point)\r\n"
            "  P <rad>  CSP position move (run_mode=5, 100 Hz loc_ref ramp)\r\n"
            "  1        PP move to 0 deg   (0 rad)\r\n"

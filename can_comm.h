@@ -20,6 +20,16 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "fdcan.h"
+
+/** Optional receive hook, called for every frame before the RS01 decoder.
+  * The DM4340 module uses it to decode standard-ID feedback while can_comm
+  * still owns the RX queue drain. */
+typedef void (*can_comm_rx_hook_t)(const fdcan_frame_t *frame);
+
+/** @brief Install (or clear with NULL) the per-frame receive hook. */
+void can_comm_set_rx_hook(can_comm_rx_hook_t hook);
+
 /** @brief Start FDCAN1 and clear the application counters. */
 bool can_comm_init(void);
 
@@ -44,6 +54,11 @@ bool can_comm_send_enable(void);
   *        for a type-2 feedback frame.
   * @param clear_error  true for 'D' (payload[0] = 1), false for 'd'. */
 bool can_comm_send_disable(bool clear_error);
+
+/** @brief Disable, then send "set mechanical zero" (communication type 6).
+  *        The present output-shaft position becomes 0 rad.  The motor replies
+  *        with a type-2 feedback frame. */
+bool can_comm_set_zero(void);
 
 /** @brief Print FDCAN protocol status, error counters and statistics. */
 void can_comm_print_status(void);

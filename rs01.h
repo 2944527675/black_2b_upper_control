@@ -105,6 +105,12 @@ void rs01_make_disable_frame(uint8_t target_id, uint16_t host_id,
                              bool clear_error, uint32_t *can_id,
                              uint8_t payload[8]);
 
+/** @brief Build the "set mechanical zero" frame (communication type 6).
+  *        payload[0] = 1, rest zero.  The motor answers with type-2 feedback.
+  *        The current output-shaft position becomes 0 rad. */
+void rs01_make_set_zero_frame(uint8_t target_id, uint16_t host_id,
+                              uint32_t *can_id, uint8_t payload[8]);
+
 /** @brief Build a uint8 parameter-write frame (communication type 0x12).
   *        payload[0..1] = index (little endian), payload[4] = value. */
 void rs01_make_write_param_u8_frame(uint8_t target_id, uint16_t host_id,
